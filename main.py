@@ -4,7 +4,6 @@ from processing.transformer import generate_report
 from db.connection import get_connection
 
 INPUT_CSV = "input/job_guids.csv"
-TEMPLATE_PATH = "input/template.xlsx"
 OUTPUT_DIR = "output"
 
 
@@ -26,7 +25,7 @@ def main():
 
         print(f"  Fetched {len(df)} rows.")
         output_path = f"{OUTPUT_DIR}/report_{job_guid}.xlsx"
-        generate_report(df, case_count, TEMPLATE_PATH, output_path)
+        generate_report(df, case_count, None, output_path)
 
     conn.close()
     print("\nAgent completed.")

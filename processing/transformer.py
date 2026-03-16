@@ -1,40 +1,47 @@
-import openpyxl
-
-TEMPLATE_SHEET = "JobStepsTemplate2"
+import pandas as pd
+from datetime import timedelta
+from openpyxl import Workbook
+from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
 
 STAGE_ORDER = [
-    ("Bulk case create API invoke:", ["CREATE_JOB"]),
-    ("Web Job 1:", ["LOAD_TO_BLOB", "LOAD_TO_STG"]),
-    ("Web Job 2:", ["DATA_VALIDATE"]),
-    ("Web Job 3:", ["CREATE_CASE", "CREATE_REPORT"]),
+    ("Bulk Case Create API Invoke", ["CREATE_JOB"]),
+    ("Web Job 1 (Load Data)", ["LOAD_TO_BLOB", "LOAD_TO_STG"]),
+    ("Web Job 2 (Validate Data)", ["DATA_VALIDATE"]),
+    ("Web Job 3 (Create Case & Report)", ["CREATE_CASE", "CREATE_REPORT"]),
 ]
 
-RAW_DATA_COLS = [
+RAW_COLS = [
     "JobStepId", "JobDefinitionStepsId", "JobId", "JobStepName",
     "Description", "ExecutionOrder", "JobDefinitionStepStatusId",
     "IsDeleted", "CreatedUser", "CreatedTimestamp",
     "UpdatedUser", "UpdatedTimestamp",
 ]
 
-DATA_START_ROW = 22
-DATA_COL_START = 2  # Column B
+
+def _fmt_td(td):
+    """Format a timedelta as hh:mm:ss.000"""
+    if td is None:
+        return ""
+    total_seconds = td.total_seconds()
+    sign = "-" if total_seconds < 0 else ""
+    total_seconds = abs(total_seconds)
+    hours, remainder = divmod(int(total_seconds), 3600)
+    minutes, seconds = divmod(remainder, 60)
+    millis = int((total_seconds - int(total_seconds)) * 1000)
+    return f"{sign}{hours:02d}:{minutes:02d}:{seconds:02d}.{millis:03d}"
 
 
-def _col_letter(col_num):
-    result = ""
-    while col_num > 0:
-        col_num, remainder = divmod(col_num - 1, 26)
-        result = chr(65 + remainder) + result
-    return result
-
-
-def _unmerge_all(ws):
-    for merge_range in list(ws.merged_cells.ranges):
-        ws.unmerge_cells(str(merge_range))
+def _parse_ts(val):
+    """Parse a timestamp value to datetime."""
+    if isinstance(val, pd.Timestamp):
+        return val.to_pydatetime()
+    if isinstance(val, str):
+        return pd.to_datetime(val).to_pydatetime()
+    return val
 
 
 def _assign_rows_to_stages(df):
-    """Walk through rows in order, assigning each to the current or next stage."""
+    """Walk through rows sequentially, assigning to stages by JobStepName."""
     stages = []
     stage_idx = 0
     current_stage_name, current_step_names = STAGE_ORDER[stage_idx]
@@ -42,7 +49,6 @@ def _assign_rows_to_stages(df):
 
     for i, row in df.iterrows():
         step_name = row["JobStepName"]
-
         if step_name in current_step_names:
             current_rows.append(i)
         else:
@@ -60,97 +66,158 @@ def _assign_rows_to_stages(df):
     if current_rows:
         stages.append((current_stage_name, current_rows))
 
-    # Find final status row: last row in the dataframe
-    last_idx = len(df) - 1
-    stages.append(("Final Status", [last_idx]))
-
     return stages
 
 
-def generate_report(df, case_count, template_path, output_path):
-    wb = openpyxl.load_workbook(template_path)
-    ws = wb[TEMPLATE_SHEET]
-
-    _unmerge_all(ws)
-
-    # Clear entire sheet below header
-    for row in range(2, ws.max_row + 1):
-        for col in range(1, 16):
-            ws.cell(row=row, column=col).value = None
-
-    # Write raw data starting at DATA_START_ROW
-    # Header row
-    for ci, col_name in enumerate(RAW_DATA_COLS):
-        ws.cell(row=DATA_START_ROW - 1, column=DATA_COL_START + ci).value = col_name
-
-    for ri, (_, row_data) in enumerate(df.iterrows()):
-        raw_row = DATA_START_ROW + ri
-        for ci, col_name in enumerate(RAW_DATA_COLS):
-            val = row_data.get(col_name)
-            if hasattr(val, "isoformat"):
-                val = val.strftime("%Y-%m-%d %H:%M:%S")
-            ws.cell(row=raw_row, column=DATA_COL_START + ci).value = val
-
-    # Assign raw data rows to stages
-    stages = _assign_rows_to_stages(df)
-
-    # Build formula section starting at row 2
-    formula_row = 2
-    prev_last_formula_row = None  # tracks M column row of last row in previous stage
+def _compute_timings(df, stages):
+    """Compute processing times and wait times between stages."""
+    results = []
+    prev_end_ts = None
 
     for s_idx, (stage_name, df_indices) in enumerate(stages):
-        # Add Wait Time row between stages (skip before first stage and Final Status)
-        if s_idx > 0 and stage_name != "Final Status" and prev_last_formula_row:
-            ws.cell(row=formula_row, column=1).value = "Wait Time"
-            # Wait = first M of next stage - last M of prev stage
-            # We'll set the formula after writing the next stage's first row
-            wait_row = formula_row
-            formula_row += 1
+        rows = df.iloc[df_indices]
+        start_ts = _parse_ts(rows["UpdatedTimestamp"].iloc[0])
+        end_ts = _parse_ts(rows["UpdatedTimestamp"].iloc[-1])
 
-        first_formula_row_of_stage = formula_row
+        # Wait time before this stage
+        if prev_end_ts is not None and s_idx > 0:
+            wait = start_ts - prev_end_ts
+            results.append({
+                "type": "wait",
+                "label": f"Wait Time (before {stage_name})",
+                "duration": wait,
+            })
 
-        for i, df_idx in enumerate(df_indices):
-            raw_row = DATA_START_ROW + df_idx
-            if i == 0:
-                ws.cell(row=formula_row, column=1).value = stage_name
-            for ci in range(len(RAW_DATA_COLS)):
-                col = DATA_COL_START + ci
-                ws.cell(row=formula_row, column=col).value = (
-                    f"={_col_letter(col)}{raw_row}"
-                )
-            formula_row += 1
+        # Processing time for this stage
+        processing = end_ts - start_ts
+        results.append({
+            "type": "stage",
+            "label": stage_name,
+            "start": start_ts,
+            "end": end_ts,
+            "duration": processing,
+            "rows": rows,
+            "df_indices": df_indices,
+        })
 
-        last_formula_row_of_stage = formula_row - 1
+        prev_end_ts = end_ts
 
-        # Set Wait Time formula (references M column of first row of current stage
-        # minus M column of last row of previous stage)
-        if s_idx > 0 and stage_name != "Final Status" and prev_last_formula_row:
-            ws.cell(row=wait_row, column=14).value = (
-                f"=M{first_formula_row_of_stage}-M{prev_last_formula_row}"
-            )
+    # Final status row
+    final_ts = _parse_ts(df["UpdatedTimestamp"].iloc[-1])
+    first_ts = _parse_ts(df["UpdatedTimestamp"].iloc[0])
+    total = final_ts - first_ts
 
-        # Processing Time for Web Job stages
-        if stage_name.startswith("Web Job"):
-            ws.cell(row=first_formula_row_of_stage, column=14).value = (
-                f"=M{last_formula_row_of_stage}-M{first_formula_row_of_stage}"
-            )
+    return results, total, first_ts, final_ts
 
-        prev_last_formula_row = last_formula_row_of_stage
+
+def generate_report(df, case_count, template_path, output_path):
+    stages = _assign_rows_to_stages(df)
+    timings, total_time, first_ts, final_ts = _compute_timings(df, stages)
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Performance Report"
+
+    # Styles
+    header_font = Font(bold=True, size=12)
+    section_font = Font(bold=True, size=11)
+    time_font = Font(bold=True, size=11, color="2F5496")
+    wait_fill = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
+    stage_fill = PatternFill(start_color="D6E4F0", end_color="D6E4F0", fill_type="solid")
+    summary_fill = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
+    thin_border = Border(
+        left=Side(style="thin"),
+        right=Side(style="thin"),
+        top=Side(style="thin"),
+        bottom=Side(style="thin"),
+    )
+
+    row = 1
+
+    # === SECTION 1: TIMING SUMMARY ===
+    ws.cell(row=row, column=1, value="TIMING SUMMARY").font = Font(bold=True, size=14)
+    row += 2
+
+    summary_headers = ["Stage", "Start Time", "End Time", "Duration (hh:mm:ss.000)"]
+    for ci, h in enumerate(summary_headers, 1):
+        cell = ws.cell(row=row, column=ci, value=h)
+        cell.font = header_font
+        cell.border = thin_border
+        cell.fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+        cell.font = Font(bold=True, size=11, color="FFFFFF")
+        cell.alignment = Alignment(horizontal="center")
+    row += 1
+
+    for timing in timings:
+        if timing["type"] == "wait":
+            ws.cell(row=row, column=1, value=timing["label"]).font = section_font
+            for ci in range(1, 5):
+                ws.cell(row=row, column=ci).fill = wait_fill
+                ws.cell(row=row, column=ci).border = thin_border
+            ws.cell(row=row, column=4, value=_fmt_td(timing["duration"])).font = time_font
+            row += 1
+        else:
+            ws.cell(row=row, column=1, value=timing["label"]).font = section_font
+            ws.cell(row=row, column=2, value=timing["start"].strftime("%Y-%m-%d %H:%M:%S"))
+            ws.cell(row=row, column=3, value=timing["end"].strftime("%Y-%m-%d %H:%M:%S"))
+            ws.cell(row=row, column=4, value=_fmt_td(timing["duration"])).font = time_font
+            for ci in range(1, 5):
+                ws.cell(row=row, column=ci).fill = stage_fill
+                ws.cell(row=row, column=ci).border = thin_border
+            row += 1
 
     # Total Processing Time
-    formula_row += 1
-    # First stage first row and last stage last row
-    first_stage_first_row = 2  # Row 2 is always Bulk case create API invoke
-    ws.cell(row=formula_row, column=1).value = "Total Processing Time"
-    ws.cell(row=formula_row, column=14).value = (
-        f"=M{prev_last_formula_row}-M{first_stage_first_row}"
-    )
-    total_row = formula_row
+    row += 1
+    for ci in range(1, 5):
+        ws.cell(row=row, column=ci).fill = summary_fill
+        ws.cell(row=row, column=ci).border = thin_border
+    ws.cell(row=row, column=1, value="Total Processing Time").font = Font(bold=True, size=12)
+    ws.cell(row=row, column=2, value=first_ts.strftime("%Y-%m-%d %H:%M:%S"))
+    ws.cell(row=row, column=3, value=final_ts.strftime("%Y-%m-%d %H:%M:%S"))
+    ws.cell(row=row, column=4, value=_fmt_td(total_time)).font = Font(bold=True, size=12, color="006100")
+    row += 1
 
     # Time per Case
-    formula_row += 1
-    ws.cell(row=formula_row, column=1).value = "Time per Case"
-    ws.cell(row=formula_row, column=14).value = f"=N{total_row}/{case_count}"
+    if case_count and case_count > 0:
+        time_per_case = total_time / case_count
+        for ci in range(1, 5):
+            ws.cell(row=row, column=ci).fill = summary_fill
+            ws.cell(row=row, column=ci).border = thin_border
+        ws.cell(row=row, column=1, value=f"Time per Case ({case_count} cases)").font = Font(bold=True, size=12)
+        ws.cell(row=row, column=4, value=_fmt_td(time_per_case)).font = Font(bold=True, size=12, color="006100")
+    row += 2
+
+    # === SECTION 2: RAW JOB STEPS DATA ===
+    ws.cell(row=row, column=1, value="RAW JOB STEPS DATA").font = Font(bold=True, size=14)
+    row += 2
+
+    display_cols = ["JobStepId", "JobStepName", "Description",
+                    "JobDefinitionStepStatusId", "UpdatedTimestamp"]
+    for ci, h in enumerate(display_cols, 1):
+        cell = ws.cell(row=row, column=ci, value=h)
+        cell.font = Font(bold=True, size=11, color="FFFFFF")
+        cell.fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+        cell.border = thin_border
+        cell.alignment = Alignment(horizontal="center")
+    row += 1
+
+    for _, data_row in df.iterrows():
+        for ci, col_name in enumerate(display_cols, 1):
+            val = data_row.get(col_name)
+            if hasattr(val, "strftime"):
+                val = val.strftime("%Y-%m-%d %H:%M:%S")
+            cell = ws.cell(row=row, column=ci, value=val)
+            cell.border = thin_border
+        row += 1
+
+    # Auto-fit column widths
+    for col_cells in ws.columns:
+        max_len = 0
+        col_letter = col_cells[0].column_letter
+        for cell in col_cells:
+            if cell.value:
+                max_len = max(max_len, len(str(cell.value)))
+        ws.column_dimensions[col_letter].width = min(max_len + 4, 60)
 
     wb.save(output_path)
     print(f"Report generated: {output_path}")
