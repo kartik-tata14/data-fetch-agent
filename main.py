@@ -1,22 +1,35 @@
-from queries.fetch_jobsteps import fetch_all_jobsteps
+import pandas as pd
+from queries.fetch_jobsteps import fetch_jobsteps_for_guid
+from processing.transformer import generate_report
+from db.connection import get_connection
 
 INPUT_CSV = "input/job_guids.csv"
-OUTPUT_CSV = "output/jobsteps_result.csv"
+TEMPLATE_PATH = "input/template.xlsx"
+OUTPUT_DIR = "output"
 
 
 def main():
     print("Agent started.")
-    df = fetch_all_jobsteps(INPUT_CSV)
+    input_df = pd.read_csv(INPUT_CSV)
+    conn = get_connection()
 
-    if df.empty:
-        print("No data returned.")
-        return
+    for _, row in input_df.iterrows():
+        job_guid = row["job_guid"]
+        case_count = int(row["case_count"])
 
-    print(f"Fetched {len(df)} rows.")
-    print(df.head())
+        print(f"\nProcessing GUID: {job_guid} (cases: {case_count})")
+        df = fetch_jobsteps_for_guid(conn, job_guid)
 
-    df.to_csv(OUTPUT_CSV, index=False)
-    print(f"Results saved to {OUTPUT_CSV}")
+        if df.empty:
+            print(f"  No data for GUID: {job_guid}")
+            continue
+
+        print(f"  Fetched {len(df)} rows.")
+        output_path = f"{OUTPUT_DIR}/report_{job_guid}.xlsx"
+        generate_report(df, case_count, TEMPLATE_PATH, output_path)
+
+    conn.close()
+    print("\nAgent completed.")
 
 
 if __name__ == "__main__":

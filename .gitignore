@@ -4,3 +4,4 @@ __pycache__/
 output/*.xlsx
 output/*.csv
 .venv/
+~$*.xlsx
