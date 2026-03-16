@@ -6,9 +6,11 @@ from processing.transformer import (
     generate_report, _assign_rows_to_stages, _compute_timings,
 )
 from processing.html_report import generate_html_report
+from processing.historical import load_run_log
 from db.connection import get_connection
 
 INPUT_CSV = "input/job_guids.csv"
+HISTORICAL_FILE = "input/GDC_RUN_LOG.xlsx"
 OUTPUT_DIR = "output"
 
 
@@ -61,10 +63,17 @@ def main():
 
     conn.close()
 
+    # Load historical data
+    historical_data = None
+    if os.path.exists(HISTORICAL_FILE):
+        print("\nLoading historical data from GDC_RUN_LOG.xlsx...")
+        historical_data = load_run_log(HISTORICAL_FILE)
+        print(f"  Loaded {len(historical_data)} historical executions.")
+
     # Generate comparative HTML report
     if all_runs:
         html_path = os.path.join(run_folder, "comparison_report.html")
-        generate_html_report(all_runs, html_path)
+        generate_html_report(all_runs, html_path, historical_data=historical_data)
 
     print(f"\nAgent completed. Results saved to: {run_folder}")
 
