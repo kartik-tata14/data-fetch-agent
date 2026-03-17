@@ -11,10 +11,14 @@ from processing.historical import load_run_log
 from processing.log_updater import update_run_log
 from db.connection import get_connection
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 INPUT_CSV = "input/job_guids.csv"
 HISTORICAL_FILE = "input/GDC_RUN_LOG.xlsx"
 OUTPUT_DIR = "output"
-ONEDRIVE_DIR = os.path.join(os.path.expanduser("~"), "OneDrive - EY", "GDC_Reports")
+SHAREPOINT_SYNC_DIR = os.getenv("SHAREPOINT_SYNC_DIR", "")
 
 
 def _create_run_folder():
@@ -83,16 +87,21 @@ def main():
         print("\nUpdating GDC_RUN_LOG.xlsx with current run data...")
         update_run_log(HISTORICAL_FILE, all_runs)
 
-    # Copy HTML report and GDC_RUN_LOG.xlsx to OneDrive for SharePoint sync
-    if all_runs:
-        os.makedirs(ONEDRIVE_DIR, exist_ok=True)
-        html_src = os.path.join(run_folder, "comparison_report.html")
-        if os.path.exists(html_src):
-            shutil.copy2(html_src, os.path.join(ONEDRIVE_DIR, "comparison_report.html"))
-            print(f"\nHTML report copied to: {ONEDRIVE_DIR}")
-        if os.path.exists(HISTORICAL_FILE):
-            shutil.copy2(HISTORICAL_FILE, os.path.join(ONEDRIVE_DIR, "GDC_RUN_LOG.xlsx"))
-            print(f"GDC_RUN_LOG.xlsx copied to: {ONEDRIVE_DIR}")
+    # Copy HTML report and GDC_RUN_LOG.xlsx to SharePoint synced folder
+    if all_runs and SHAREPOINT_SYNC_DIR:
+        try:
+            os.makedirs(SHAREPOINT_SYNC_DIR, exist_ok=True)
+            html_src = os.path.join(run_folder, "comparison_report.html")
+            if os.path.exists(html_src):
+                shutil.copy2(html_src, os.path.join(SHAREPOINT_SYNC_DIR, "comparison_report.html"))
+                print(f"\nHTML report copied to: {SHAREPOINT_SYNC_DIR}")
+            if os.path.exists(HISTORICAL_FILE):
+                shutil.copy2(HISTORICAL_FILE, os.path.join(SHAREPOINT_SYNC_DIR, "GDC_RUN_LOG.xlsx"))
+                print(f"GDC_RUN_LOG.xlsx copied to: {SHAREPOINT_SYNC_DIR}")
+        except Exception as e:
+            print(f"\nWarning: Could not copy to SharePoint folder: {e}")
+    elif all_runs and not SHAREPOINT_SYNC_DIR:
+        print("\nNote: SHAREPOINT_SYNC_DIR not set in .env. Skipping SharePoint upload.")
 
     print(f"\nAgent completed. Results saved to: {run_folder}")
 
