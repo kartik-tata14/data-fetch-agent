@@ -138,13 +138,14 @@ st.sidebar.code(sp_result_path, language=None)
 st.sidebar.markdown("---")
 st.sidebar.header("Import from LoadRunner Cloud")
 
+lrc_client_id = os.getenv("LRC_CLIENT_ID", "")
+lrc_client_secret = os.getenv("LRC_CLIENT_SECRET", "")
+
 with st.sidebar.expander("LRC Import Settings", expanded=False):
     lrc_base_url = st.text_input(
         "LRC Base URL",
         value=os.getenv("LRC_BASE_URL", "https://loadrunner-cloud.saas.microfocus.com"),
     )
-    lrc_client_id = st.text_input("Client ID", value=os.getenv("LRC_CLIENT_ID", ""), type="password")
-    lrc_client_secret = st.text_input("Client Secret", value=os.getenv("LRC_CLIENT_SECRET", ""), type="password")
     lrc_tenant_id = st.text_input("Tenant ID", value=os.getenv("LRC_TENANT_ID", ""))
     lrc_project_id = st.text_input("Project ID", value=os.getenv("LRC_PROJECT_ID", ""))
     lrc_filter_text = st.text_input(
@@ -152,6 +153,10 @@ with st.sidebar.expander("LRC Import Settings", expanded=False):
         value="GDC Details Debug: Captured JOBGUID_",
         help="Only transactions whose name contains this text will be used.",
     )
+    if lrc_client_id and lrc_client_secret:
+        st.caption("API credentials loaded from .env")
+    else:
+        st.warning("Set LRC_CLIENT_ID and LRC_CLIENT_SECRET in .env")
 
 lrc_run_id = st.sidebar.text_input("LRC Run ID", placeholder="e.g. 12345")
 lrc_case_count = st.sidebar.number_input(
