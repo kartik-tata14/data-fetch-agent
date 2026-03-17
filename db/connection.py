@@ -5,9 +5,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
-def get_connection():
+def get_connection(database_override=None):
     server = os.getenv("AZURE_SQL_SERVER")
-    database = os.getenv("AZURE_SQL_DATABASE")
+    database = database_override or os.getenv("AZURE_SQL_DATABASE")
     username = os.getenv("AZURE_SQL_USERNAME")
     password = os.getenv("AZURE_SQL_PASSWORD")
     port = os.getenv("AZURE_SQL_PORT", "1433")

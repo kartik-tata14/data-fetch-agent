@@ -1,5 +1,6 @@
 import os
 import shutil
+from pathlib import Path
 from datetime import datetime
 import pandas as pd
 from queries.fetch_jobsteps import fetch_jobsteps_for_guid
@@ -18,7 +19,10 @@ load_dotenv()
 INPUT_CSV = "input/job_guids.csv"
 HISTORICAL_FILE = "input/GDC_RUN_LOG.xlsx"
 OUTPUT_DIR = "output"
-SHAREPOINT_SYNC_DIR = os.getenv("SHAREPOINT_SYNC_DIR", "")
+SHAREPOINT_SYNC_DIR = os.getenv(
+    "SHAREPOINT_SYNC_DIR",
+    os.path.join(str(Path.home()), "EY", "Global Tax Test Automation - RELEASE"),
+)
 
 
 def _create_run_folder():
