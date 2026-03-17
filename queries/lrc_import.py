@@ -17,11 +17,10 @@ _JOBGUID_PATTERN = re.compile(r"JOBGUID_([0-9a-fA-F\-]{36})")
 def authenticate(base_url: str, client_id: str, client_secret: str, tenant_id: str) -> str:
     """Authenticate to LRC and return session token."""
     url = f"{base_url.rstrip('/')}/v1/auth-client"
-    payload = {"clientId": client_id, "clientSecret": client_secret}
+    params = {"TENANTID": str(tenant_id)} if tenant_id else {}
+    payload = {"client_id": client_id, "client_secret": client_secret}
     headers = {"Content-Type": "application/json"}
-    if tenant_id:
-        headers["TENANTID"] = str(tenant_id)
-    resp = requests.post(url, json=payload, headers=headers, timeout=30)
+    resp = requests.post(url, json=payload, headers=headers, params=params, timeout=30)
     resp.raise_for_status()
     token = resp.json().get("token")
     if not token:
@@ -37,13 +36,13 @@ def fetch_transaction_summary(
     run_id: str,
 ) -> list[dict]:
     """Fetch transaction summary for a given run."""
-    url = f"{base_url.rstrip('/')}/v1/projects/{project_id}/runs/{run_id}/transactions"
+    url = f"{base_url.rstrip('/')}/v1/test-runs/{run_id}/transactions"
     headers = {
         "Authorization": f"Bearer {token}",
-        "TENANTID": str(tenant_id),
         "Content-Type": "application/json",
     }
-    resp = requests.get(url, headers=headers, timeout=60)
+    params = {"TENANTID": str(tenant_id)}
+    resp = requests.get(url, headers=headers, params=params, timeout=60)
     resp.raise_for_status()
     return resp.json()
 
