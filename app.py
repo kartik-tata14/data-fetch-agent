@@ -3,7 +3,7 @@ import json
 import shutil
 import getpass
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, date
 import streamlit as st
 import pandas as pd
 from dotenv import load_dotenv
@@ -30,16 +30,19 @@ SHAREPOINT_BASE_TEMPLATE = os.getenv(
 )
 
 
-def _get_user_home():
-    return str(Path.home())
-
-
-def _resolve_sharepoint_path(user_id=None):
-    if user_id:
-        home = f"C:\\Users\\{user_id}"
-    else:
-        home = _get_user_home()
+def _resolve_sharepoint_base(user_id=None):
+    home = f"C:\\Users\\{user_id}" if user_id else str(Path.home())
     return SHAREPOINT_BASE_TEMPLATE.replace("{home}", home)
+
+
+def _build_sharepoint_result_path(user_id, release, exec_date, test_name):
+    """Build: {base}/{release}/{date}_{test_name}/"""
+    base = _resolve_sharepoint_base(user_id)
+    safe_release = release.replace(" ", "_")
+    date_str = exec_date.strftime("%Y%m%d")
+    safe_test = test_name.strip().replace(" ", "_")
+    folder_name = f"{date_str}_{safe_test}"
+    return os.path.join(base, safe_release, folder_name)
 
 
 def _load_releases():
@@ -65,22 +68,20 @@ st.set_page_config(
 st.title("GDC Bulk Case Creation Tool")
 st.markdown("---")
 
-# === SIDEBAR ===
+# ================================================================
+# SIDEBAR
+# ================================================================
 
-# --- Settings Section ---
+# --- Settings ---
 st.sidebar.header("Settings")
 
-# User ID for SharePoint
 current_user = getpass.getuser()
 user_id = st.sidebar.text_input(
     "User ID (for SharePoint sync path)",
     value=current_user,
-    help="Your Windows user ID. Used to resolve the SharePoint sync folder path.",
+    help="Your Windows user ID. Used to resolve the SharePoint sync folder.",
 )
-resolved_sp_path = _resolve_sharepoint_path(user_id)
-st.sidebar.caption(f"SharePoint path: `{resolved_sp_path}`")
 
-# Database override
 default_db = os.getenv("AZURE_SQL_DATABASE", "")
 db_override = st.sidebar.text_input(
     "Database Name (override)",
@@ -88,11 +89,11 @@ db_override = st.sidebar.text_input(
     help="Leave as-is to use default from .env, or enter a different database name.",
 )
 
-# GDC Release selection
-releases = _load_releases()
+# --- GDC Release ---
 st.sidebar.markdown("---")
 st.sidebar.subheader("GDC Release")
 
+releases = _load_releases()
 selected_release = st.sidebar.selectbox(
     "Select Release",
     options=releases,
@@ -111,7 +112,28 @@ with st.sidebar.expander("Add New Release"):
         else:
             st.warning(f"'{name}' already exists.")
 
-# --- Job GUID Input Section ---
+# --- Execution Details ---
+st.sidebar.markdown("---")
+st.sidebar.subheader("Execution Details")
+
+exec_date = st.sidebar.date_input(
+    "Execution Date",
+    value=date.today(),
+    help="Date of the test execution.",
+)
+
+test_name = st.sidebar.text_input(
+    "Test Name",
+    value="BulkCaseCreation_Test",
+    help="A short name for this test run (e.g. Smoke_Test, Regression_2K, Stress_20K).",
+)
+
+# Show resolved SharePoint path
+sp_result_path = _build_sharepoint_result_path(user_id, selected_release, exec_date, test_name)
+st.sidebar.caption(f"SharePoint result path:")
+st.sidebar.code(sp_result_path, language=None)
+
+# --- Job GUID Input ---
 st.sidebar.markdown("---")
 st.sidebar.header("Job GUID Input")
 
@@ -170,19 +192,20 @@ if uploaded_file is not None:
     except Exception as e:
         st.sidebar.error(f"Error reading CSV: {e}")
 
-
-# === MAIN AREA ===
+# ================================================================
+# MAIN AREA
+# ================================================================
 tab1, tab2, tab3 = st.tabs(["Run Agent", "View Report", "Historical Data"])
 
 # --- TAB 1: Run Agent ---
 with tab1:
     st.header("Execute Data Fetch Agent")
 
-    # Show current config
-    col_cfg1, col_cfg2, col_cfg3 = st.columns(3)
+    col_cfg1, col_cfg2, col_cfg3, col_cfg4 = st.columns(4)
     col_cfg1.info(f"**Release:** {selected_release}")
-    col_cfg2.info(f"**Database:** {db_override or '(default from .env)'}")
-    col_cfg3.info(f"**User:** {user_id}")
+    col_cfg2.info(f"**Date:** {exec_date.strftime('%Y-%m-%d')}")
+    col_cfg3.info(f"**Test:** {test_name}")
+    col_cfg4.info(f"**DB:** {db_override or '(default)'}")
 
     if os.path.exists(INPUT_CSV):
         current_df = pd.read_csv(INPUT_CSV)
@@ -201,7 +224,11 @@ with tab1:
 
     st.markdown("---")
 
-    if st.button("Run Agent", type="primary", disabled=current_df.empty):
+    can_run = not current_df.empty and test_name.strip()
+    if not test_name.strip():
+        st.warning("Please enter a Test Name in the sidebar before running.")
+
+    if st.button("Run Agent", type="primary", disabled=not can_run):
         progress = st.progress(0)
         status = st.empty()
         log_area = st.empty()
@@ -212,13 +239,17 @@ with tab1:
             log_area.code("\n".join(logs), language="text")
 
         try:
+            # Create local run folder
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             run_folder = os.path.join(OUTPUT_DIR, f"run_{timestamp}")
             os.makedirs(run_folder, exist_ok=True)
             log(f"Output folder: {run_folder}")
             log(f"Release: {selected_release}")
+            log(f"Execution Date: {exec_date}")
+            log(f"Test Name: {test_name}")
             log(f"Database: {db_override or '(default)'}")
 
+            # Connect
             status.info("Connecting to Azure SQL...")
             effective_db = db_override if db_override != default_db else None
             conn = get_connection(database_override=effective_db)
@@ -258,6 +289,7 @@ with tab1:
             conn.close()
             log("Database connection closed.")
 
+            # Historical data
             progress.progress((total + 1) / (total + 3))
             status.info("Loading historical data...")
             historical_data = None
@@ -266,35 +298,51 @@ with tab1:
                 log(f"Loaded {len(historical_data)} historical executions.")
 
             if all_runs:
+                # Generate HTML report
                 progress.progress((total + 2) / (total + 3))
                 status.info("Generating reports...")
                 html_path = os.path.join(run_folder, "comparison_report.html")
                 generate_html_report(all_runs, html_path, historical_data=historical_data)
                 log(f"HTML report generated: {html_path}")
 
+                # Update RUN LOG
                 if os.path.exists(HISTORICAL_FILE):
-                    test_name = f"{selected_release}_{datetime.now().strftime('%d%b%Y')}"
-                    update_run_log(HISTORICAL_FILE, all_runs, test_name=test_name)
+                    log_test_name = f"{selected_release}_{test_name}_{exec_date.strftime('%d%b%Y')}"
+                    update_run_log(HISTORICAL_FILE, all_runs, test_name=log_test_name)
                     log("GDC_RUN_LOG.xlsx updated with current run data.")
 
-                # SharePoint copy
-                sp_path = _resolve_sharepoint_path(user_id)
-                if sp_path:
-                    try:
-                        os.makedirs(sp_path, exist_ok=True)
-                        if os.path.exists(html_path):
-                            shutil.copy2(html_path, os.path.join(sp_path, "comparison_report.html"))
-                        if os.path.exists(HISTORICAL_FILE):
-                            shutil.copy2(HISTORICAL_FILE, os.path.join(sp_path, "GDC_RUN_LOG.xlsx"))
-                        log(f"Files copied to SharePoint: {sp_path}")
-                    except Exception as e:
-                        log(f"Warning: SharePoint copy failed: {e}")
+                # Copy to SharePoint: {base}/{release}/{date}_{test_name}/
+                sp_path = _build_sharepoint_result_path(user_id, selected_release, exec_date, test_name)
+                try:
+                    os.makedirs(sp_path, exist_ok=True)
+                    log(f"SharePoint folder created: {sp_path}")
+
+                    if os.path.exists(html_path):
+                        shutil.copy2(html_path, os.path.join(sp_path, "comparison_report.html"))
+                    if os.path.exists(HISTORICAL_FILE):
+                        shutil.copy2(HISTORICAL_FILE, os.path.join(sp_path, "GDC_RUN_LOG.xlsx"))
+
+                    # Also copy individual Excel reports
+                    for f_name in os.listdir(run_folder):
+                        if f_name.endswith(".xlsx"):
+                            shutil.copy2(
+                                os.path.join(run_folder, f_name),
+                                os.path.join(sp_path, f_name),
+                            )
+
+                    log(f"All results copied to SharePoint: {sp_path}")
+                except Exception as e:
+                    log(f"Warning: SharePoint copy failed: {e}")
 
                 st.session_state["last_run_folder"] = run_folder
                 st.session_state["last_html_path"] = html_path
 
             progress.progress(1.0)
-            status.success(f"Agent completed. {len(all_runs)} GUIDs processed. Results in: {run_folder}")
+            status.success(
+                f"Agent completed. {len(all_runs)} GUIDs processed.\n"
+                f"Local: {run_folder}\n"
+                f"SharePoint: {sp_path}"
+            )
 
         except Exception as e:
             status.error(f"Error: {e}")
