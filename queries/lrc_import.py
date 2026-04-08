@@ -8,10 +8,22 @@ API workflow:
 4. Extract Job GUIDs from matching transaction names
 """
 
+import os
 import re
 import requests
+import urllib3
+
+# Disable SSL warnings when verification is disabled (common in corporate environments)
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 _JOBGUID_PATTERN = re.compile(r"JOBGUID_([0-9a-fA-F\-]{36})")
+
+# SSL verification: set to False to bypass certificate verification (for corporate proxies)
+# Can be overridden via environment variable LRC_VERIFY_SSL=false
+def _get_ssl_verify():
+    """Get SSL verification setting from environment."""
+    env_val = os.getenv("LRC_VERIFY_SSL", "false").lower()
+    return env_val in ("true", "1", "yes")
 
 
 def authenticate(base_url: str, client_id: str, client_secret: str, tenant_id: str) -> str:
@@ -20,7 +32,7 @@ def authenticate(base_url: str, client_id: str, client_secret: str, tenant_id: s
     params = {"TENANTID": str(tenant_id)} if tenant_id else {}
     payload = {"client_id": client_id, "client_secret": client_secret}
     headers = {"Content-Type": "application/json"}
-    resp = requests.post(url, json=payload, headers=headers, params=params, timeout=30)
+    resp = requests.post(url, json=payload, headers=headers, params=params, timeout=30, verify=_get_ssl_verify())
     resp.raise_for_status()
     token = resp.json().get("token")
     if not token:
@@ -42,7 +54,7 @@ def fetch_transaction_summary(
         "Content-Type": "application/json",
     }
     params = {"TENANTID": str(tenant_id)}
-    resp = requests.get(url, headers=headers, params=params, timeout=60)
+    resp = requests.get(url, headers=headers, params=params, timeout=60, verify=_get_ssl_verify())
     resp.raise_for_status()
     return resp.json()
 
